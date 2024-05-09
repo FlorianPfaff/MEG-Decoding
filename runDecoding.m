@@ -90,53 +90,50 @@ function accuracies = runDecoding(dataFolder, parts, nFolds, windowSize, trainWi
                 trainFeatures = reducedTrainFeatures;
             end
 
-            % Loop through stimuli, train and test the classifiers
-            switch classifier
-                case 'mostFrequentDummy'
-                    predLbl(fold == f & labels > 0) = dummyClassifier(trainLabels);
-                case 'always1Dummy'
-                    predLbl(fold == f & labels > 0) = 1;
-                case 'random-forest'
-                     model = trainRandomForest(trainFeatures, trainLabels, classifierParam);
-                     predLbl(fold == f & labels > 0) = generatePredictionsFromModel(testFeatures, model);
-                case 'gradient-boosting'
-                    models = cell(1, nStim);
-                    for stim = 1:nStim
-                        models{stim} = trainGradientBoosting(trainFeatures, double(trainLabels == stim), testFeatures, classifierParam);
-                        allPred(:, stim) = generatePredictionsFromModel(testFeatures, models{stim});
+            if contains(classifier, {'gradient-boosting', 'lasso', 'svm-binary'})
+                % Iterate over all stimuli for binary classifiers
+                models = cell(1, nStim);
+                for stim = 1:nStim
+                    switch classifier
+                        case 'gradient-boosting'
+                            models{stim} = trainGradientBoosting(trainFeatures, double(trainLabels == stim), testFeatures, classifierParam);
+                            allPred(:, stim) = generatePredictionsFromModel(testFeatures, models{stim});
+                        case 'lasso'
+                            models{stim} = trainForStimulusLassoGLM(trainFeatures, double(trainLabels == stim), classifierParam);
+                            allPred(:, stim) = glmval([models{stim}.intercept; models{stim}.beta], testFeatures, 'logit');
+                        case 'svm-binary'
+                            models{stim} = trainBinarySVM(trainFeatures, double(trainLabels == stim), testFeatures, classifierParam);
+                            [~, score] = predict(models{stim}, testFeatures);
+                            allPred(:, stim) = score(:, 2); % The second column contains scores for the positive class
+                        otherwise
+                            error('Unsupported classifier.')
                     end
-
-                    [~, predLbl(fold == f & labels > 0)] = max(allPred, [], 2);
-                case 'multiclass-svm'
-                    model = trainMulticlassSVM(trainFeatures, trainLabels, classifierParam, false);
-                    predLbl(fold == f & labels > 0) = generatePredictionsFromModel(testFeatures, model);
-                case 'multiclass-svm-weighted'
-                    model = trainMulticlassSVM(trainFeatures, trainLabels, classifierParam, true);
-                    predLbl(fold == f & labels > 0) = generatePredictionsFromModel(testFeatures, model);
-                case 'knn'
-                    model = trainKNN(trainFeatures, trainLabels, classifierParam);
-                    predLbl(fold == f & labels > 0) = generatePredictionsFromModel(testFeatures, model);
-                case 'lasso'
-                    modelParams = cell(1, nStim);
-                    for stim = 1:nStim
-                        modelParams{stim} = trainForStimulusLassoGLM(trainFeatures, double(trainLabels == stim), classifierParam);
-                        allPred(:, stim) = glmval([modelParams{stim}.intercept; modelParams{stim}.beta], testFeatures, 'logit');
-                    end
-
-                    [~, predLbl(fold == f & labels > 0)] = max(allPred, [], 2);
-                case 'svm-binary'
-
-                    for stim = 1:nStim
-                        model = trainBinarySVM(trainFeatures, double(trainLabels == stim), testFeatures, classifierParam);
-                        [~, score] = predict(model, testFeatures);
-                        allPred(:, stim) = score(:, 2); % The second column contains scores for the positive class
-                    end
-
-                    [~, predLbl(fold(labels > 0) == f)] = max(allPred, [], 2);
-                otherwise
-                    error('Invalid classifier type')
+                end
+                % Set to most suitable class
+                [~, predLbl(fold == f & labels > 0)] = max(allPred, [], 2);
+            else
+                % No iteration for multiclass classifiers
+                switch classifier
+                    case 'mostFrequentDummy'
+                        predLbl(fold == f & labels > 0) = dummyClassifier(trainLabels);
+                    case 'always1Dummy'
+                        predLbl(fold == f & labels > 0) = 1;
+                    case 'random-forest'
+                         model = trainRandomForest(trainFeatures, trainLabels, classifierParam);
+                         predLbl(fold == f & labels > 0) = generatePredictionsFromModel(testFeatures, model);
+                    case 'multiclass-svm'
+                        model = trainMulticlassSVM(trainFeatures, trainLabels, classifierParam, false);
+                        predLbl(fold == f & labels > 0) = generatePredictionsFromModel(testFeatures, model);
+                    case 'multiclass-svm-weighted'
+                        model = trainMulticlassSVM(trainFeatures, trainLabels, classifierParam, true);
+                        predLbl(fold == f & labels > 0) = generatePredictionsFromModel(testFeatures, model);
+                    case 'knn'
+                        model = trainKNN(trainFeatures, trainLabels, classifierParam);
+                        predLbl(fold == f & labels > 0) = generatePredictionsFromModel(testFeatures, model);
+                    otherwise
+                        error('Unsupported classifier.')
+                end
             end
-
         end
 
         predLbl'
