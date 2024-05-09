@@ -55,7 +55,7 @@ function accuracies = runDecoding(dataFolder, parts, nFolds, windowSize, trainWi
         if ~isempty(nullFeaturesCell)
             % Assing null data to the same fold as the corresponding stimulus data
             fold = [fold, fold];
-            labels = [labels, zeros(1, length(data.trial))];
+            labels = [labels, zeros(1, nTrials)];
         end
 
         nTrialsPerFold = nTrials / nFolds;
@@ -75,14 +75,10 @@ function accuracies = runDecoding(dataFolder, parts, nFolds, windowSize, trainWi
 
             if componentsPCA ~= inf
                 % Apply PCA to the training data
-                [reducedTrainFeatures, coeff, explainedVariance] = reduceFeaturesPCA(trainFeatures, componentsPCA);
+                [trainFeatures, coeff, explainedVariance] = reduceFeaturesPCA(trainFeatures, componentsPCA);
                 fprintf('Explained Variance by %d components: %.2f%%\n', componentsPCA, explainedVariance);
-
                 % Transform the test features using the same PCA transformation
                 testFeatures = testFeatures * coeff(:, 1:componentsPCA);
-
-                % Update the trainFeatures and testFeatures variables to be used in classification
-                trainFeatures = reducedTrainFeatures;
             end
 
             if contains(classifier, {'gradient-boosting', 'lasso', 'svm-binary'})
