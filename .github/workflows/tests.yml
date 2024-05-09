@@ -10,6 +10,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    strategy:
+      matrix:
+        model: ['lasso', 'multiclass-svm']
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
@@ -21,7 +25,7 @@ jobs:
       with:
         products: Statistics_and_Machine_Learning_Toolbox
 
-    - name: Downlaod Data
+    - name: Download Data
       run: |
         wget -q ${{ secrets.DOWNLOAD_URL }}
 
@@ -30,6 +34,6 @@ jobs:
       with:
         command: |
           tic
-          acc = runDecoding('.', 2, 10, 0.1, 0.2, -0.2, inf, 'lasso', nan, 100, [0, inf])
+          acc = runDecoding('.', 2, 10, 0.1, 0.2, -0.2, inf, '${{ matrix.model }}', nan, 100, [0, inf])
           toc
           assert(acc>0.35)
