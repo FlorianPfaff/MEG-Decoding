@@ -7,7 +7,7 @@ function accuracies = runDecoding(dataFolder, parts, nFolds, windowSize, trainWi
 
     arguments
         dataFolder char = '.';
-        parts (1, :) double {mustBeInteger, mustBePositive} = [1:4,6, 8:10, 13:27];
+        parts (1, :) double {mustBeInteger, mustBePositive} = [15]
         nFolds (1, 1) double {mustBeInteger, mustBePositive} = 10;
         % Window size in seconds
         windowSize (1, 1) double = 0.1;
@@ -21,13 +21,13 @@ function accuracies = runDecoding(dataFolder, parts, nFolds, windowSize, trainWi
         % Set newFramerate to inf to disable downsampling. Set to '100' to emulate the behavior of runLasso.m
         newFramerate (1, 1) double = inf;
         % Type of classifier to use, e.g. 'lasso', 'multiclass-svm', 'random-forest', 'gradient-boosting', 'knn', 'mostFrequentDummy', 'always1Dummy'.
-        classifier char = 'lasso';
+        classifier char = 'multiclass-svm';
         % Param of L1 regularisation of Lasso GLM or box constraint of SVM,
         % number of trees for RF, number of boosting iterations for GBM,
         % of neighbors for KNN, etc.
         classifierParam (1, 1) double = nan;
         % Number of components to retain after PCA. Set to inf to keep all components.
-        componentsPCA (1, 1) double = inf;
+        componentsPCA (1, 1) double = 100;
         frequencyRange (1, 2) double = [0, inf];
     end
 
@@ -64,12 +64,6 @@ function accuracies = runDecoding(dataFolder, parts, nFolds, windowSize, trainWi
         % Create folds for cross-validation
         [allFeatures, labels, fold] = partitionData(data, nFolds, trainWindow, nullTimeWindow);
         nTrialsPerFold = nTrials / nFolds;
-        % Assign some memory
-        if componentsPCA == inf
-            nFeats = size(allFeatures, 1);
-        else
-            nFeats = componentsPCA;
-        end
 
         allFeats = nan(nFolds, nStim);
         predLbl = nan(nTrials, 1);
@@ -77,9 +71,6 @@ function accuracies = runDecoding(dataFolder, parts, nFolds, windowSize, trainWi
         % Loop through folds
         for f = 1:nFolds
 
-            % Assign some memory
-            allBeta = nan(nFeats, nStim);
-            allInts = nan(nStim, 1);
             allPred = nan(nTrialsPerFold, nStim);
 
             % Get training and testing data
@@ -106,32 +97,39 @@ function accuracies = runDecoding(dataFolder, parts, nFolds, windowSize, trainWi
                 case 'always1Dummy'
                     predLbl(fold == f & labels > 0) = 1;
                 case 'random-forest'
-                    predLbl(fold == f & labels > 0) = trainAndPredictRandomForest(trainFeatures, trainLabels, testFeatures, classifierParam);
+                     model = trainRandomForest(trainFeatures, trainLabels, classifierParam);
+                     predLbl(fold == f & labels > 0) = generatePredictionsFromModel(testFeatures, model);
                 case 'gradient-boosting'
-
+                    models = cell(1, nStim);
                     for stim = 1:nStim
-                        allPred(:, stim) = trainAndPredictGradientBoosting(trainFeatures, double(trainLabels == stim), testFeatures, classifierParam);
+                        models{stim} = trainGradientBoosting(trainFeatures, double(trainLabels == stim), testFeatures, classifierParam);
+                        allPred(:, stim) = generatePredictionsFromModel(testFeatures, models{stim});
                     end
 
                     [~, predLbl(fold == f & labels > 0)] = max(allPred, [], 2);
                 case 'multiclass-svm'
-                    predLbl(fold == f & labels > 0) = trainAndPredictMulticlassSVM(trainFeatures, trainLabels, testFeatures, classifierParam, false);
+                    model = trainMulticlassSVM(trainFeatures, trainLabels, classifierParam, false);
+                    predLbl(fold == f & labels > 0) = generatePredictionsFromModel(testFeatures, model);
                 case 'multiclass-svm-weighted'
-                    predLbl(fold == f & labels > 0) = trainAndPredictMulticlassSVM(trainFeatures, trainLabels, testFeatures, classifierParam, true);
+                    model = trainMulticlassSVM(trainFeatures, trainLabels, classifierParam, true);
+                    predLbl(fold == f & labels > 0) = generatePredictionsFromModel(testFeatures, model);
                 case 'knn'
-                    predLbl(fold == f & labels > 0) = trainAndPredictKNN(trainFeatures, trainLabels, testFeatures, classifierParam);
+                    model = trainKNN(trainFeatures, trainLabels, classifierParam);
+                    predLbl(fold == f & labels > 0) = generatePredictionsFromModel(testFeatures, model);
                 case 'lasso'
-
+                    modelParams = cell(1, nStim);
                     for stim = 1:nStim
-                        [allPred(:, stim), allBeta(:, stim), allInts(stim)] = trainAndPredictForStimulusLassoGLM(trainFeatures, double(trainLabels == stim), testFeatures, classifierParam);
+                        modelParams{stim} = trainForStimulusLassoGLM(trainFeatures, double(trainLabels == stim), classifierParam);
+                        allPred(:, stim) = glmval([modelParams{stim}.intercept; modelParams{stim}.beta], testFeatures, 'logit');
                     end
 
-                    allFeats(f, :) = sum(allBeta ~= 0);
                     [~, predLbl(fold == f & labels > 0)] = max(allPred, [], 2);
                 case 'svm-binary'
 
                     for stim = 1:nStim
-                        allPred(:, stim) = trainAndPredictBinarySVM(trainFeatures, double(trainLabels == stim), testFeatures, classifierParam);
+                        model = trainBinarySVM(trainFeatures, double(trainLabels == stim), testFeatures, classifierParam);
+                        [~, score] = predict(model, testFeatures);
+                        allPred(:, stim) = score(:, 2); % The second column contains scores for the positive class
                     end
 
                     [~, predLbl(fold(labels > 0) == f)] = max(allPred, [], 2);
@@ -241,33 +239,28 @@ function predictions = dummyClassifier(labels)
     predictions = mostFreqLabel;
 end
 
-function [predictions, beta, intercept] = trainAndPredictForStimulusLassoGLM(trainFeatures, trainLabels, testFeatures, lambda)
+function modelParams = trainForStimulusLassoGLM(trainFeatures, trainLabels, lambda)
     % Train a Lasso GLM model for binary classification
     [beta, fitInfo] = lassoglm(trainFeatures, trainLabels, 'binomial', 'Alpha', 1, 'Lambda', lambda, 'Standardize', true);
     intercept = fitInfo.Intercept; % Extract the intercept from fitInfo
-    predictions = glmval([intercept; beta], testFeatures, 'logit');
+    modelParams = struct('beta', beta, 'intercept', intercept);
 end
 
-function predictions = trainAndPredictBinarySVM(trainFeatures, trainLabels, testFeatures, boxConstraint)
-    SVMModel = fitcsvm(trainFeatures, trainLabels, 'Standardize', true, 'KernelFunction', 'linear', 'BoxConstraint', boxConstraint);
-    [~, score] = predict(SVMModel, testFeatures);
-    predictions = score(:, 2); % The second column contains scores for the positive class
+function model = trainBinarySVM(trainFeatures, trainLabels, boxConstraint)
+    model = fitcsvm(trainFeatures, trainLabels, 'Standardize', true, 'KernelFunction', 'linear', 'BoxConstraint', boxConstraint);
 end
 
-function predictions = trainAndPredictMulticlassSVM(trainFeatures, trainLabels, testFeatures, boxConstraint, weighted)
+function model = trainMulticlassSVM(trainFeatures, trainLabels, boxConstraint, weighted)
     t = templateSVM('Standardize', true, 'KernelFunction', 'linear', ...
         'BoxConstraint', boxConstraint);
 
     if ~weighted
-        SVMModel = fitcecoc(trainFeatures, trainLabels, 'Coding', 'onevsone', 'Learners', t);
+        model = fitcecoc(trainFeatures, trainLabels, 'Coding', 'onevsone', 'Learners', t);
     else
         % Train a SVM model for multiclass classification using fitcecoc with weighting
-        SVMModel = fitcecoc(trainFeatures, trainLabels, 'Coding', 'onevsone', ...
+        model = fitcecoc(trainFeatures, trainLabels, 'Coding', 'onevsone', ...
             'Learners', t, 'Weights', calculateObservationWeights(trainLabels));
     end
-
-    % Make predictions for the current fold
-    predictions = predict(SVMModel, testFeatures);
 
     function weightsObs = calculateObservationWeights(labels)
         % Calculate observation weights based on class frequency
@@ -284,26 +277,27 @@ function predictions = trainAndPredictMulticlassSVM(trainFeatures, trainLabels, 
 
 end
 
-function predictions = trainAndPredictRandomForest(trainFeatures, trainLabels, testFeatures, classifierParam)
+function model = trainRandomForest(trainFeatures, trainLabels,  classifierParam)
     % Train the Random Forest model
-    RFModel = TreeBagger(classifierParam, trainFeatures, trainLabels, 'Method', 'classification', 'OOBPrediction', 'On', 'MinLeafSize', 5, 'OOBPredictorImportance', 'On');
-
-    % Predict the responses for the testing set
-    [predictions, ~] = predict(RFModel, testFeatures);
-    % Convert predictions from cell to numeric, as predict returns cell array for classification
-    predictions = str2double(predictions);
+    model = TreeBagger(classifierParam, trainFeatures, trainLabels, 'Method', 'classification', 'OOBPrediction', 'On', 'MinLeafSize', 5, 'OOBPredictorImportance', 'On');
 end
 
-function predictions = trainAndPredictGradientBoosting(trainFeatures, trainLabels, testFeatures, classifierParam)
+function predictions = generatePredictionsFromModel(testFeatures, model)
+        % Predict the responses for the testing set
+        [predictions, ~] = predict(model, testFeatures);
+        % Convert predictions from cell to numeric, as predict returns cell array for classification
+        if iscell(predictions) && ischar(predictions{1})
+            predictions = str2double(predictions);
+        end
+end
+
+function model = trainGradientBoosting(trainFeatures, trainLabels, classifierParam)
     % Train the Gradient Boosting model
     t = templateTree('MaxNumSplits', 20); % Customize decision tree template
-    GBMModel = fitcensemble(trainFeatures, trainLabels, 'Method', 'LogitBoost', 'NumLearningCycles', classifierParam, 'Learners', t, 'LearnRate', 0.1);
-
-    % Predict the responses for the testing set
-    predictions = predict(GBMModel, testFeatures);
+    model = fitcensemble(trainFeatures, trainLabels, 'Method', 'LogitBoost', 'NumLearningCycles', classifierParam, 'Learners', t, 'LearnRate', 0.1);
 end
 
-function predictions = trainAndPredictKNN(trainFeatures, trainLabels, testFeatures, numNeighbors)
+function model = trainKNN(trainFeatures, trainLabels, numNeighbors)
     % Train and predict using a K-Nearest Neighbors (KNN) classifier
     %
     % Inputs:
@@ -316,10 +310,10 @@ function predictions = trainAndPredictKNN(trainFeatures, trainLabels, testFeatur
     %   predictions   - A column vector of predicted labels for the test examples.
 
     % Create a KNN model using the training data
-    KNNModel = fitcknn(trainFeatures, trainLabels, 'NumNeighbors', numNeighbors);
+    model = fitcknn(trainFeatures, trainLabels, 'NumNeighbors', numNeighbors);
 
     % Predict the labels of the test data using the KNN model
-    predictions = predict(KNNModel, testFeatures);
+    predictions = predict(model, testFeatures);
 end
 
 function [reducedFeatures, coeff, explainedVariance] = reduceFeaturesPCA(features, nComponents)
