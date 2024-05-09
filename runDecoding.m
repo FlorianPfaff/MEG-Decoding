@@ -155,39 +155,6 @@ function accuracies = runDecoding(dataFolder, parts, nFolds, windowSize, trainWi
 
 end
 
-function model = trainMulticlassClassifier(trainFeatures, trainLabels, classifier, classifierParam)
-    switch classifier
-        case 'random-forest'
-            model = trainRandomForest(trainFeatures, trainLabels, classifierParam);
-        case 'multiclass-svm'
-            model = trainMulticlassSVM(trainFeatures, trainLabels, classifierParam, false);
-        case 'multiclass-svm-weighted'
-            model = trainMulticlassSVM(trainFeatures, trainLabels, classifierParam, true);
-        case 'knn'
-            model = trainKNN(trainFeatures, trainLabels, classifierParam);
-        case {'mostFrequentDummy', 'always1Dummy'}
-            % No training required for dummy classifiers
-        otherwise
-            error('Unsupported classifier.')
-    end
-end
-
-function predictions = generatePredictionsFromModel(testFeatures, model, classifier)
-    switch classifier
-        case 'mostFrequentDummy'
-            predictions = dummyClassifier(trainLabels);
-        case 'always1Dummy'
-            predictions = 1;
-        case {'random-forest', 'multiclass-svm', 'multiclass-svm-weighted', 'knn'}
-            [predictions, ~] = predict(model, testFeatures);
-        otherwise
-            error('Unsupported classifier.')
-    end
-    if iscell(predictions) && ischar(predictions{1})
-        predictions = str2double(predictions);
-    end
-end
-
 function data = downsampleData(data, newFramerate)
     % Downsample the MEG data to a new sampling frequency if required
 
@@ -244,11 +211,10 @@ function [trainData, labels, fold] = partitionData(data, nFolds, trainWindow, nu
     trainData = horzcat(trainDataCell{:}, nullDataCell{:});
 end
 
-function predictions = dummyClassifier(labels)
-    % Dummy classifier that predicts the most frequent class
-    frequencies = histcounts(labels(labels > 0));
-    [~, mostFreqLabel] = max(frequencies);
-    predictions = mostFreqLabel;
+function model = trainGradientBoosting(trainFeatures, trainLabels, classifierParam)
+    % Train the Gradient Boosting model
+    t = templateTree('MaxNumSplits', 20); % Customize decision tree template
+    model = fitcensemble(trainFeatures, trainLabels, 'Method', 'LogitBoost', 'NumLearningCycles', classifierParam, 'Learners', t, 'LearnRate', 0.1);
 end
 
 function modelParams = trainForStimulusLassoGLM(trainFeatures, trainLabels, lambda)
@@ -260,60 +226,6 @@ end
 
 function model = trainBinarySVM(trainFeatures, trainLabels, boxConstraint)
     model = fitcsvm(trainFeatures, trainLabels, 'Standardize', true, 'KernelFunction', 'linear', 'BoxConstraint', boxConstraint);
-end
-
-function model = trainMulticlassSVM(trainFeatures, trainLabels, boxConstraint, weighted)
-    t = templateSVM('Standardize', true, 'KernelFunction', 'linear', ...
-        'BoxConstraint', boxConstraint);
-
-    if ~weighted
-        model = fitcecoc(trainFeatures, trainLabels, 'Coding', 'onevsone', 'Learners', t);
-    else
-        % Train a SVM model for multiclass classification using fitcecoc with weighting
-        model = fitcecoc(trainFeatures, trainLabels, 'Coding', 'onevsone', ...
-            'Learners', t, 'Weights', calculateObservationWeights(trainLabels));
-    end
-
-    function weightsObs = calculateObservationWeights(labels)
-        % Calculate observation weights based on class frequency
-        [frequencies, labelNames] = histcounts(categorical(labels));
-        weightsClass = 1 ./ frequencies;
-        weightsObs = nan(size(labels));
-
-        for i = 1:numel(frequencies)
-            weightsObs(labels == str2double(labelNames{i})) = weightsClass(i);
-        end
-
-        weightsObs = weightsObs / sum(weightsObs); % Normalize weights
-    end
-
-end
-
-function model = trainRandomForest(trainFeatures, trainLabels,  classifierParam)
-    % Train the Random Forest model
-    model = TreeBagger(classifierParam, trainFeatures, trainLabels, 'Method', 'classification', 'OOBPrediction', 'On', 'MinLeafSize', 5, 'OOBPredictorImportance', 'On');
-end
-
-function model = trainGradientBoosting(trainFeatures, trainLabels, classifierParam)
-    % Train the Gradient Boosting model
-    t = templateTree('MaxNumSplits', 20); % Customize decision tree template
-    model = fitcensemble(trainFeatures, trainLabels, 'Method', 'LogitBoost', 'NumLearningCycles', classifierParam, 'Learners', t, 'LearnRate', 0.1);
-end
-
-function model = trainKNN(trainFeatures, trainLabels, numNeighbors)
-    % Train and predict using a K-Nearest Neighbors (KNN) classifier
-    %
-    % Inputs:
-    %   trainFeatures - A matrix where each row is a feature vector of a training example.
-    %   trainLabels   - A column vector of labels for the training examples.
-    %   testFeatures  - A matrix where each row is a feature vector of a test example to predict.
-    %   numNeighbors  - The number of neighbors to use in the KNN classifier.
-    %
-    % Outputs:
-    %   predictions   - A column vector of predicted labels for the test examples.
-
-    % Create a KNN model using the training data
-    model = fitcknn(trainFeatures, trainLabels, 'NumNeighbors', numNeighbors);
 end
 
 function [reducedFeatures, coeff, explainedVariance] = reduceFeaturesPCA(features, nComponents)
