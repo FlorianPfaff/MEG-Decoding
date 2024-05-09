@@ -61,8 +61,17 @@ function accuracies = runDecoding(dataFolder, parts, nFolds, windowSize, trainWi
         nTrials = length(labels);
         nStim = length(unique(labels));
 
-        % Create folds for cross-validation
-        [allFeatures, labels, fold] = partitionData(data, nFolds, trainWindow, nullTimeWindow);
+        [stimuliFeaturesCell, nullFeaturesCell] = extractWindows(data, trainWindow, nullTimeWindow);
+        allFeatures = horzcat(stimuliFeaturesCell{:}, nullFeaturesCell{:});
+
+        % Create folds
+        fold = ceil((1:length(data.trial)) / (length(data.trial) / nFolds));
+        if diff(nullTimeWindow)~=0
+            % Assing null data to the same fold as the corresponding stimulus data
+            fold = [fold, fold];
+            labels = [labels, zeros(1, length(data.trial))];
+        end
+
         nTrialsPerFold = nTrials / nFolds;
 
         allFeats = nan(nFolds, nStim);
@@ -176,11 +185,9 @@ function data = downsampleData(data, newFramerate)
     end
 end
 
-function [trainData, labels, fold] = partitionData(data, nFolds, trainWindow, nullTimeWindow)
-
+function [stimuliFeaturesCell, nullFeaturesCell] = extractWindows(data, trainWindow, nullTimeWindow)
     arguments
         data struct
-        nFolds (1, 1) double {mustBeInteger, mustBePositive}
         trainWindow (1, 2) double
         nullTimeWindow (1, 2) double
     end
@@ -189,26 +196,20 @@ function [trainData, labels, fold] = partitionData(data, nFolds, trainWindow, nu
     assert(any(isnan(nullTimeWindow)) || diff(nullTimeWindow) == diff(trainWindow), 'Train and null window must have the same length')
     assert(diff(trainWindow) >= 0, 'Train window ill defined')
 
-    fold = ceil((1:length(data.trial)) / (length(data.trial) / nFolds));
+    
     [~, trainBeginIndex] = min(abs(data.time{1} - trainWindow(1)));
     [~, trainEndIndex] = min(abs(data.time{1} - trainWindow(2)));
-    trainDataCell = cellfun(@(x) reshape(x(:, trainBeginIndex:trainEndIndex), [], 1), data.trial, 'UniformOutput', false);
-
-    labels = data.trialinfo;
+    stimuliFeaturesCell = cellfun(@(x) reshape(x(:, trainBeginIndex:trainEndIndex), [], 1), data.trial, 'UniformOutput', false);
 
     if any(isnan(nullTimeWindow))
-        nullDataCell = {};
+        nullFeaturesCell = {};
     elseif diff(nullTimeWindow) >= 0
         [~, nullBeginIndex] = min(abs(data.time{1} - nullTimeWindow(1)));
         nullEndIndex = nullBeginIndex + (trainEndIndex - trainBeginIndex);
-        fold = [fold, fold];
-        labels = [labels, zeros(1, length(data.trial))];
-        nullDataCell = cellfun(@(x) reshape(x(:, nullBeginIndex:nullEndIndex), [], 1), data.trial, 'UniformOutput', false);
+        nullFeaturesCell = cellfun(@(x) reshape(x(:, nullBeginIndex:nullEndIndex), [], 1), data.trial, 'UniformOutput', false);
     else
         error('Invalid null window')
     end
-
-    trainData = horzcat(trainDataCell{:}, nullDataCell{:});
 end
 
 function model = trainGradientBoosting(trainFeatures, trainLabels, classifierParam)
