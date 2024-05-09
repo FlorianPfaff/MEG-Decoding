@@ -7,7 +7,7 @@ function accuracies = runDecoding(dataFolder, parts, nFolds, windowSize, trainWi
 
     arguments
         dataFolder char = '.';
-        parts (1, :) double {mustBeInteger, mustBePositive} = [15]
+        parts (1, :) double {mustBeInteger, mustBePositive} = [2]
         nFolds (1, 1) double {mustBeInteger, mustBePositive} = 10;
         % Window size in seconds
         windowSize (1, 1) double = 0.1;
@@ -113,26 +113,10 @@ function accuracies = runDecoding(dataFolder, parts, nFolds, windowSize, trainWi
                 [~, predLbl(fold == f & labels > 0)] = max(allPred, [], 2);
             else
                 % No iteration for multiclass classifiers
-                switch classifier
-                    case 'mostFrequentDummy'
-                        predLbl(fold == f & labels > 0) = dummyClassifier(trainLabels);
-                    case 'always1Dummy'
-                        predLbl(fold == f & labels > 0) = 1;
-                    case 'random-forest'
-                         model = trainRandomForest(trainFeatures, trainLabels, classifierParam);
-                         predLbl(fold == f & labels > 0) = generatePredictionsFromModel(testFeatures, model);
-                    case 'multiclass-svm'
-                        model = trainMulticlassSVM(trainFeatures, trainLabels, classifierParam, false);
-                        predLbl(fold == f & labels > 0) = generatePredictionsFromModel(testFeatures, model);
-                    case 'multiclass-svm-weighted'
-                        model = trainMulticlassSVM(trainFeatures, trainLabels, classifierParam, true);
-                        predLbl(fold == f & labels > 0) = generatePredictionsFromModel(testFeatures, model);
-                    case 'knn'
-                        model = trainKNN(trainFeatures, trainLabels, classifierParam);
-                        predLbl(fold == f & labels > 0) = generatePredictionsFromModel(testFeatures, model);
-                    otherwise
-                        error('Unsupported classifier.')
-                end
+                % Train
+                model = trainMulticlassClassifier(trainFeatures, trainLabels, classifier, classifierParam);
+                % Predict
+                predLbl(fold == f & labels > 0) = generatePredictionsFromModel(testFeatures, model, classifier);
             end
         end
 
@@ -171,6 +155,39 @@ function accuracies = runDecoding(dataFolder, parts, nFolds, windowSize, trainWi
 
 end
 
+function model = trainMulticlassClassifier(trainFeatures, trainLabels, classifier, classifierParam)
+    switch classifier
+        case 'random-forest'
+            model = trainRandomForest(trainFeatures, trainLabels, classifierParam);
+        case 'multiclass-svm'
+            model = trainMulticlassSVM(trainFeatures, trainLabels, classifierParam, false);
+        case 'multiclass-svm-weighted'
+            model = trainMulticlassSVM(trainFeatures, trainLabels, classifierParam, true);
+        case 'knn'
+            model = trainKNN(trainFeatures, trainLabels, classifierParam);
+        case {'mostFrequentDummy', 'always1Dummy'}
+            % No training required for dummy classifiers
+        otherwise
+            error('Unsupported classifier.')
+    end
+end
+
+function predictions = generatePredictionsFromModel(testFeatures, model, classifier)
+    switch classifier
+        case 'mostFrequentDummy'
+            predictions = dummyClassifier(trainLabels);
+        case 'always1Dummy'
+            predictions = 1;
+        case {'random-forest', 'multiclass-svm', 'multiclass-svm-weighted', 'knn'}
+            [predictions, ~] = predict(model, testFeatures);
+        otherwise
+            error('Unsupported classifier.')
+    end
+    if iscell(predictions) && ischar(predictions{1})
+        predictions = str2double(predictions);
+    end
+end
+
 function data = downsampleData(data, newFramerate)
     % Downsample the MEG data to a new sampling frequency if required
 
@@ -189,9 +206,7 @@ function data = downsampleData(data, newFramerate)
             data.trial{t} = interp1(data.time{t}, data.trial{t}', newT)'; % Interpolate data
             data.time{t} = newT; % Update time vector for this trial
         end
-
     end
-
 end
 
 function [trainData, labels, fold] = partitionData(data, nFolds, trainWindow, nullTimeWindow)
@@ -279,15 +294,6 @@ function model = trainRandomForest(trainFeatures, trainLabels,  classifierParam)
     model = TreeBagger(classifierParam, trainFeatures, trainLabels, 'Method', 'classification', 'OOBPrediction', 'On', 'MinLeafSize', 5, 'OOBPredictorImportance', 'On');
 end
 
-function predictions = generatePredictionsFromModel(testFeatures, model)
-        % Predict the responses for the testing set
-        [predictions, ~] = predict(model, testFeatures);
-        % Convert predictions from cell to numeric, as predict returns cell array for classification
-        if iscell(predictions) && ischar(predictions{1})
-            predictions = str2double(predictions);
-        end
-end
-
 function model = trainGradientBoosting(trainFeatures, trainLabels, classifierParam)
     % Train the Gradient Boosting model
     t = templateTree('MaxNumSplits', 20); % Customize decision tree template
@@ -308,9 +314,6 @@ function model = trainKNN(trainFeatures, trainLabels, numNeighbors)
 
     % Create a KNN model using the training data
     model = fitcknn(trainFeatures, trainLabels, 'NumNeighbors', numNeighbors);
-
-    % Predict the labels of the test data using the KNN model
-    predictions = predict(model, testFeatures);
 end
 
 function [reducedFeatures, coeff, explainedVariance] = reduceFeaturesPCA(features, nComponents)
