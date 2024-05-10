@@ -54,8 +54,8 @@ function accuracies = runDecoding(dataFolder, parts, nFolds, windowSize, trainWi
         fold = ceil((1:length(data.trial)) / (length(data.trial) / nFolds));
         if ~isempty(nullFeaturesCell)
             % Assing null data to the same fold as the corresponding stimulus data
-            fold = [fold, fold];
-            labels = [labels, zeros(1, nTrials)];
+            fold = [fold, fold]; %#ok<AGROW>
+            labels = [labels, zeros(1, nTrials)]; %#ok<AGROW>
         end
 
         nTrialsPerFold = nTrials / nFolds;
