@@ -1,4 +1,4 @@
-function [reducedFeatures, coeff, explainedVariance] = reduceFeaturesPCA(features, nComponents)
+function [reducedFeatures, coeff, featureMean, explainedVariance] = reduceFeaturesPCA(features, nComponents)
     % reduceFeaturesPCA Perform dimensionality reduction on feature set using PCA
     %
     % Inputs:
@@ -13,12 +13,11 @@ function [reducedFeatures, coeff, explainedVariance] = reduceFeaturesPCA(feature
     nComponents = min(nComponents, size(features, 2));
 
     % Perform PCA on the features
-    [coeff, score, ~, ~, explained] = pca(features);
+    [coeff, score, ~, ~, explained, featureMean] = pca(features);
 
     % Select the first nComponents
     reducedFeatures = score(:, 1:nComponents);
 
     % Calculate the explained variance of the selected components
     explainedVariance = sum(explained(1:nComponents));
-
 end
