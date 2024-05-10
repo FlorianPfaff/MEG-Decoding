@@ -13,11 +13,10 @@ function [reducedFeatures, coeff, explainedVariance] = reduceFeaturesPCA(feature
     nComponents = min(nComponents, size(features, 2));
 
     % Perform PCA on the features
-    [coeff, ~, ~, ~, explained] = pca(features);
+    [coeff, score, ~, ~, explained] = pca(features);
 
     % Select the first nComponents
-    reducedCoeff = coeff(:, 1:nComponents);
-    reducedFeatures = features * reducedCoeff;
+    reducedFeatures = score(:, 1:nComponents);
 
     % Calculate the explained variance of the selected components
     explainedVariance = sum(explained(1:nComponents));
