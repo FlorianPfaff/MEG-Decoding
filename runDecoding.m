@@ -73,6 +73,7 @@ function accuracies = runDecoding(dataFolder, parts, nFolds, windowSize, trainWi
             trainLabels = labels(fold ~= f)';
             testFeatures = allFeatures(:, fold == f & labels > 0)';
 
+            nFeaturesOrig = size(allFeatures, 1);
             if componentsPCA ~= inf
                 % Apply PCA to the training data
                 [trainFeatures, coeff, explainedVariance] = reduceFeaturesPCA(trainFeatures, componentsPCA);
@@ -80,6 +81,8 @@ function accuracies = runDecoding(dataFolder, parts, nFolds, windowSize, trainWi
                 % Transform the test features using the same PCA transformation
                 testFeatures = testFeatures * coeff(:, 1:componentsPCA);
             end
+            assert(size(trainFeatures, 2) == min(nFeaturesOrig, componentsPCA) && size(testFeatures, 2) == min(nFeaturesOrig, componentsPCA), ...
+                'Feature dimension incorrect.')
 
             if contains(classifier, {'gradient-boosting', 'lasso', 'svm-binary'})
                 % Iterate over all stimuli for binary classifiers
