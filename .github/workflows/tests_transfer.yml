@@ -20,6 +20,13 @@ jobs:
       with:
         products: Statistics_and_Machine_Learning_Toolbox
 
+    - name: Cache downloaded data
+      id: cache-data
+      uses: actions/cache@v3
+      with:
+        path: data
+        key: ${{ runner.os }}-data
+
     - name: Download Data
       run: |
         mkdir -p data
