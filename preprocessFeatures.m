@@ -88,6 +88,8 @@ function [stimuliFeaturesCell, nullFeaturesCell] = extractWindows(data, trainWin
 
     if any(isnan(nullTimeWindow))
         nullFeaturesCell = {};
+    elseif nullTimeWindow(2) > 0
+        error('Null window should not contain positive time points')
     elseif diff(nullTimeWindow) >= 0
         [~, nullBeginIndex] = min(abs(data.time{1} - nullTimeWindow(1)));
         nullEndIndex = nullBeginIndex + (trainEndIndex - trainBeginIndex);
