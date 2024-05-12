@@ -34,6 +34,6 @@ jobs:
       with:
         command: |
           tic
-          acc = runDecoding('.', 2, 10, 0.1, 0.2, -0.2, inf, '${{ matrix.model }}', nan, 100, [0, inf])
+          acc = crossValidateSingleDataset('.', 2, 10, 0.1, 0.2, -0.2, inf, '${{ matrix.model }}', nan, 100, [0, inf])
           toc
           assert(acc>0.35)
