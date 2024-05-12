@@ -1,0 +1,38 @@
+name: TestTransfer
+
+on: # yamllint disable-line rule:truthy
+  push:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Set up MATLAB
+      uses: matlab-actions/setup-matlab@v2
+      with:
+        products: Statistics_and_Machine_Learning_Toolbox
+
+    - name: Download Data
+      run: |
+        mkdir -p data
+        cd data
+        wget -q ${{ secrets.DOWNLOAD_URL }}
+        wget -q ${{ secrets.DOWNLOAD_URL_CUE }}
+        cd ..
+
+    - name: Run and test accuracy
+      uses: matlab-actions/run-command@v2
+      with:
+        command: |
+          tic
+          acc = evaluateModelTransfer('data', 2, 0.1, 0.2, -0.2, inf, 'multiclass-svm', nan, 100, [0, inf])
+          toc
+          assert(acc>0.20)
