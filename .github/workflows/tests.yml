@@ -25,15 +25,25 @@ jobs:
       with:
         products: Statistics_and_Machine_Learning_Toolbox
 
+    - name: Cache downloaded data
+      id: cache-data
+      uses: actions/cache@v3
+      with:
+        path: data
+        key: ${{ runner.os }}-data
+
     - name: Download Data
       run: |
+        mkdir -p data
+        cd data
         wget -q ${{ secrets.DOWNLOAD_URL }}
+        cd ..
 
     - name: Run and test accuracy
       uses: matlab-actions/run-command@v2
       with:
         command: |
           tic
-          acc = crossValidateSingleDataset('.', 2, 10, 0.1, 0.2, -0.2, inf, '${{ matrix.model }}', nan, 100, [0, inf])
+          acc = crossValidateSingleDataset('data', 2, 10, 0.1, 0.2, -0.2, inf, '${{ matrix.model }}', nan, 100, [0, inf])
           toc
           assert(acc>0.35)
