@@ -1,9 +1,9 @@
-function paramTable = runGridSearchDecoding(dataFolder, parts, nFolds, windowSizes, trainWindowCenters, ...
+function paramTable = runGridSearchDecoding(dataFolder, participantIDs, nFolds, windowSizes, trainWindowCenters, ...
         nullWindowCenters, newFramerates, classifiers, classifierParams, componentsPCAs, frequencyRanges)
 
     arguments
         dataFolder char = '.';
-        parts (1, :) double {mustBeInteger, mustBePositive} = [1:4, 6, 8:10, 13:27];
+        participantIDs (1, :) double {mustBeInteger, mustBePositive} = [1:4, 6, 8:10, 13:27];
         nFolds (1, 1) double {mustBeInteger, mustBePositive} = 10;
         % Window size in seconds
         windowSizes (1, :) double = [0.2];
@@ -51,7 +51,7 @@ function paramTable = runGridSearchDecoding(dataFolder, parts, nFolds, windowSiz
     end
     % Placeholder for the results
     numCombinations = size(paramTable, 1);
-    accuracies = repmat({NaN(size(parts))}, [numCombinations, 1]);
+    accuracies = repmat({NaN(size(participantIDs))}, [numCombinations, 1]);
     meanAccuracies = NaN(numCombinations, 1);
     % Display the table (optional)
     disp(paramTable);
@@ -68,10 +68,10 @@ function paramTable = runGridSearchDecoding(dataFolder, parts, nFolds, windowSiz
         frequencyRange = currRow.FrequencyRange{:};
 
         % Run the decoding function with the current set of parameters
-        for j = 1:numel(parts)
+        for j = 1:numel(participantIDs)
             % Evaluate them one by one to avoid losing results on failure on any individual case
             try
-                accuracies{i}(j) = runDecoding(dataFolder, parts(j), nFolds, windowSize, trainWindowCenters, ...
+                accuracies{i}(j) = crossValidateMultipleDatasets(dataFolder, participantIDs(j), nFolds, windowSize, trainWindowCenters, ...
                     nullWindowCenter, newFramerate, classifier, classifierParam, componentsPCA, frequencyRange);
             catch ME
                 fprintf('Error with combination %d: %s\n', i, ME.message);
