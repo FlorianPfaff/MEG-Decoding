@@ -33,6 +33,7 @@ jobs:
         key: ${{ runner.os }}-data
 
     - name: Download Data
+      if: steps.cache-data.outputs.cache-hit != 'true'
       run: |
         mkdir -p data
         cd data
