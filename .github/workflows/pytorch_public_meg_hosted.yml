@@ -38,14 +38,16 @@ jobs:
         run: |
           set -euxo pipefail
           python - <<'PY' | tee visual92_path.txt
+          from pathlib import Path
           import mne
+          download_root = Path.cwd() / 'mne_data'
           path = mne.datasets.visual_92_categories.data_path(
-              path='mne_data',
+              path=str(download_root),
               update_path=False,
               download=True,
               verbose=True,
           )
-          print(path)
+          print(Path(path).resolve())
           PY
           echo "DATA_ROOT=$(tail -n 1 visual92_path.txt)" >> "$GITHUB_ENV"
 
