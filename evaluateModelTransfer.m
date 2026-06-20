@@ -15,13 +15,17 @@ function accuracy = evaluateModelTransfer(dataFolder, parts, windowSize, trainWi
         nullWindowCenter (1, 1) double = -0.2;
         % Set newFramerate to inf to disable downsampling. Set to '100' to emulate the behavior of runLasso.m
         newFramerate (1, 1) double = inf;
-        % Type of classifier to use, e.g. 'lasso', 'multiclass-svm', 'random-forest', 'gradient-boosting', 'knn', 'mostFrequentDummy', 'always1Dummy'.
+        % Type of classifier to use, e.g. 'lasso', 'multiclass-svm',
+        % 'multiclass-svm-weighted', 'branch-fusion-svm',
+        % 'branch-fusion-svm-weighted', 'random-forest',
+        % 'gradient-boosting', 'knn', 'mostFrequentDummy', 'always1Dummy'.
         classifier char = 'multiclass-svm';
         % Param of L1 regularisation of Lasso GLM or box constraint of SVM,
         % number of trees for RF, number of boosting iterations for GBM,
         % of neighbors for KNN, etc.
         classifierParam (1, 1) double = nan;
         % Number of components to retain after PCA. Set to inf to keep all components.
+        % For branch-fusion classifiers this is applied independently per branch.
         componentsPCA (1, 1) double = 100;
         frequencyRange (1, 2) double = [0, inf];
     end
@@ -29,6 +33,9 @@ function accuracy = evaluateModelTransfer(dataFolder, parts, windowSize, trainWi
     if any(isnan(classifierParam))
         classifierParam = getDefaultClassifierParam(classifier);
     end
+
+    useBranchFusion = ismember(classifier, {'branch-fusion-svm', 'branch-fusion-svm-weighted'});
+
     trainExpData = load([dataFolder filesep 'Part' int2str(parts) 'Data.mat']);
     valExpData = load([dataFolder filesep 'Part' int2str(parts) 'CueData.mat']);
 
@@ -38,22 +45,50 @@ function accuracy = evaluateModelTransfer(dataFolder, parts, windowSize, trainWi
     if ~isempty(setdiff(labelsTrainExp, labelsValExp))
         warning('There are labels in the training or validation experiment that are not in the other experiment.')
     end
-    [stimuliFeaturesCellTrainExp, nullFeaturesCellTrainExp] = preprocessFeatures(trainExpData.data, frequencyRange, newFramerate, windowSize, trainWindowCenter, nullWindowCenter);
-    [stimuliFeaturesCellValExp, ~] = preprocessFeatures(valExpData.data, frequencyRange, newFramerate, windowSize, trainWindowCenter, nan);
-    featuresTrainExp = horzcat(stimuliFeaturesCellTrainExp{:}, nullFeaturesCellTrainExp{:})';
-    labelsTrainExp = [labelsTrainExp, zeros(1, length(nullFeaturesCellTrainExp))];
-    featuresValExp = horzcat(stimuliFeaturesCellValExp{:})';
-    
-    if componentsPCA ~= inf
-        [featuresTrainExp, coeff, featuresTrainExpMean, explainedVariance] = reduceFeaturesPCA(featuresTrainExp, componentsPCA);
-        fprintf('Explained Variance by %d components: %.2f%%\n', componentsPCA, explainedVariance);
-        % Transform the features for the validation experiment using the same PCA transformation
-        featuresValExp = (featuresValExp - featuresTrainExpMean) * coeff(:, 1:componentsPCA);
+
+    if useBranchFusion
+        [stimuliFeaturesByBranchTrainExp, nullFeaturesByBranchTrainExp, branchInfo] = preprocessBranchFeatures(trainExpData.data, ...
+            frequencyRange, newFramerate, windowSize, trainWindowCenter, nullWindowCenter);
+        [stimuliFeaturesByBranchValExp, ~] = preprocessBranchFeatures(valExpData.data, ...
+            frequencyRange, newFramerate, windowSize, trainWindowCenter, nan, branchInfo);
+
+        featuresTrainExp = cellfun(@(stimFeatures, nullFeatures) horzcat(stimFeatures{:}, nullFeatures{:})', ...
+            stimuliFeaturesByBranchTrainExp, nullFeaturesByBranchTrainExp, 'UniformOutput', false);
+        featuresValExp = cellfun(@(stimFeatures) horzcat(stimFeatures{:})', ...
+            stimuliFeaturesByBranchValExp, 'UniformOutput', false);
+        labelsTrainExp = [labelsTrainExp, zeros(1, length(nullFeaturesByBranchTrainExp{1}))];
+
+        assert(numel(featuresTrainExp) == numel(featuresValExp), ...
+            'Training and validation experiments produced different numbers of branches.')
+
+        if componentsPCA ~= inf
+            for branchIdx = 1:numel(featuresTrainExp)
+                assert(size(featuresTrainExp{branchIdx}, 2) == size(featuresValExp{branchIdx}, 2), ...
+                    'Training and validation branch feature dimensions differ before PCA.')
+                nFeaturesOrig = size(featuresTrainExp{branchIdx}, 2);
+                nComponents = min(componentsPCA, nFeaturesOrig);
+                [featuresTrainExp{branchIdx}, coeff, featuresTrainExpMean, explainedVariance] = reduceFeaturesPCA(featuresTrainExp{branchIdx}, nComponents);
+                fprintf('Branch %d PCA: explained variance by %d components: %.2f%%\n', branchIdx, nComponents, explainedVariance);
+                featuresValExp{branchIdx} = (featuresValExp{branchIdx} - featuresTrainExpMean) * coeff(:, 1:nComponents);
+            end
+        end
+    else
+        [stimuliFeaturesCellTrainExp, nullFeaturesCellTrainExp] = preprocessFeatures(trainExpData.data, frequencyRange, newFramerate, windowSize, trainWindowCenter, nullWindowCenter);
+        [stimuliFeaturesCellValExp, ~] = preprocessFeatures(valExpData.data, frequencyRange, newFramerate, windowSize, trainWindowCenter, nan);
+        featuresTrainExp = horzcat(stimuliFeaturesCellTrainExp{:}, nullFeaturesCellTrainExp{:})';
+        labelsTrainExp = [labelsTrainExp, zeros(1, length(nullFeaturesCellTrainExp))];
+        featuresValExp = horzcat(stimuliFeaturesCellValExp{:})';
+
+        if componentsPCA ~= inf
+            [featuresTrainExp, coeff, featuresTrainExpMean, explainedVariance] = reduceFeaturesPCA(featuresTrainExp, componentsPCA);
+            fprintf('Explained Variance by %d components: %.2f%%\n', componentsPCA, explainedVariance);
+            % Transform the features for the validation experiment using the same PCA transformation
+            featuresValExp = (featuresValExp - featuresTrainExpMean) * coeff(:, 1:componentsPCA);
+        end
     end
 
     model = trainMulticlassClassifier(featuresTrainExp, labelsTrainExp, classifier, classifierParam);
     predictionsValExp = generatePredictionsFromModel(featuresValExp, model, classifier);
-
 
     accuracy = mean(predictionsValExp == labelsValExp')
 end
