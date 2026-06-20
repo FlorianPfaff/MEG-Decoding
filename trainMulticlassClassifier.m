@@ -7,10 +7,14 @@ function model = trainMulticlassClassifier(trainFeatures, trainLabels, classifie
             model = trainMulticlassSVM(trainFeatures, trainLabels, classifierParam, false);
         case 'multiclass-svm-weighted'
             model = trainMulticlassSVM(trainFeatures, trainLabels, classifierParam, true);
+        case 'branch-fusion-svm'
+            model = trainBranchFusionSVM(trainFeatures, trainLabels, classifierParam, false);
+        case 'branch-fusion-svm-weighted'
+            model = trainBranchFusionSVM(trainFeatures, trainLabels, classifierParam, true);
         case 'knn'
             model = trainKNN(trainFeatures, trainLabels, classifierParam);
         case 'mostFrequentDummy'
-            frequencies = histcounts(labels(labels > 0));
+            frequencies = histcounts(trainLabels(trainLabels > 0));
             [~, model] = max(frequencies);
         case 'always1Dummy'
             % No training required for this classifier
@@ -30,20 +34,46 @@ function model = trainMulticlassSVM(trainFeatures, trainLabels, boxConstraint, w
         model = fitcecoc(trainFeatures, trainLabels, 'Coding', 'onevsone', ...
             'Learners', t, 'Weights', calculateObservationWeights(trainLabels));
     end
+end
 
-    function weightsObs = calculateObservationWeights(labels)
-        % Calculate observation weights based on class frequency
-        [frequencies, labelNames] = histcounts(categorical(labels));
-        weightsClass = 1 ./ frequencies;
-        weightsObs = nan(size(labels));
+function model = trainBranchFusionSVM(trainFeaturesByBranch, trainLabels, boxConstraint, weighted)
+    % Train one linear ECOC SVM per feature branch. At prediction time, the
+    % per-branch class scores are summed. This implements a lightweight
+    % parallel temporal/spatial branch model without adding a deep-learning
+    % dependency and without using any held-out target data for fitting.
+    assert(iscell(trainFeaturesByBranch), 'Branch-fusion classifiers expect a cell array of branch features.')
+    assert(~isempty(trainFeaturesByBranch), 'At least one branch is required for branch-fusion classification.')
 
-        for i = 1:numel(frequencies)
-            weightsObs(labels == str2double(labelNames{i})) = weightsClass(i);
+    nBranches = numel(trainFeaturesByBranch);
+    model = struct();
+    model.branchModels = cell(1, nBranches);
+    model.classNames = [];
+    model.fusion = 'sum-score';
+
+    for b = 1:nBranches
+        assert(size(trainFeaturesByBranch{b}, 1) == numel(trainLabels), ...
+            'All branch feature matrices must have one row per training label.')
+        model.branchModels{b} = trainMulticlassSVM(trainFeaturesByBranch{b}, trainLabels, boxConstraint, weighted);
+        if b == 1
+            model.classNames = model.branchModels{b}.ClassNames;
+        else
+            assert(isequal(model.classNames, model.branchModels{b}.ClassNames), ...
+                'All branch models must use the same class order.')
         end
+    end
+end
 
-        weightsObs = weightsObs / sum(weightsObs); % Normalize weights
+function weightsObs = calculateObservationWeights(labels)
+    % Calculate observation weights based on class frequency
+    [frequencies, labelNames] = histcounts(categorical(labels));
+    weightsClass = 1 ./ frequencies;
+    weightsObs = nan(size(labels));
+
+    for i = 1:numel(frequencies)
+        weightsObs(labels == str2double(labelNames{i})) = weightsClass(i);
     end
 
+    weightsObs = weightsObs / sum(weightsObs); % Normalize weights
 end
 
 function model = trainRandomForest(trainFeatures, trainLabels,  classifierParam)
