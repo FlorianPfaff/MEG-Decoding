@@ -16,7 +16,10 @@ function accuracies = crossValidateMultipleDatasets(dataFolder, participantIDs, 
         nullWindowCenter (1, 1) double = -0.2;
         % Set newFramerate to inf to disable downsampling. Set to '100' to emulate the behavior of runLasso.m
         newFramerate (1, 1) double = inf;
-        % Type of classifier to use, e.g. 'lasso', 'multiclass-svm', 'random-forest', 'gradient-boosting', 'knn', 'mostFrequentDummy', 'always1Dummy'.
+        % Type of classifier to use, e.g. 'lasso', 'multiclass-svm',
+        % 'multiclass-svm-weighted', 'branch-fusion-svm',
+        % 'branch-fusion-svm-weighted', 'random-forest',
+        % 'gradient-boosting', 'knn', 'mostFrequentDummy', 'always1Dummy'.
         classifier char = 'multiclass-svm';
         % Param of L1 regularisation of Lasso GLM or box constraint of SVM,
         % number of trees for RF, number of boosting iterations for GBM,
