@@ -20,13 +20,17 @@ function accuracy = crossValidateSingleDataset(dataFolder, participantID, nFolds
         nullWindowCenter (1, 1) double = -0.2;
         % Set newFramerate to inf to disable downsampling. Set to '100' to emulate the behavior of runLasso.m
         newFramerate (1, 1) double = inf;
-        % Type of classifier to use, e.g. 'lasso', 'multiclass-svm', 'random-forest', 'gradient-boosting', 'knn', 'mostFrequentDummy', 'always1Dummy'.
+        % Type of classifier to use, e.g. 'lasso', 'multiclass-svm',
+        % 'multiclass-svm-weighted', 'branch-fusion-svm',
+        % 'branch-fusion-svm-weighted', 'random-forest',
+        % 'gradient-boosting', 'knn', 'mostFrequentDummy', 'always1Dummy'.
         classifier char = 'multiclass-svm';
         % Param of L1 regularisation of Lasso GLM or box constraint of SVM,
         % number of trees for RF, number of boosting iterations for GBM,
         % of neighbors for KNN, etc.
         classifierParam (1, 1) double = nan;
         % Number of components to retain after PCA. Set to inf to keep all components.
+        % For branch-fusion classifiers this is applied independently per branch.
         componentsPCA (1, 1) double = 100;
         frequencyRange (1, 2) double = [0, inf];
     end
@@ -35,26 +39,42 @@ function accuracy = crossValidateSingleDataset(dataFolder, participantID, nFolds
         classifierParam = getDefaultClassifierParam(classifier);
     end
 
+    useBranchFusion = any(strcmp(classifier, {'branch-fusion-svm', 'branch-fusion-svm-weighted'}));
+
     % Load the data for that participant
     load([dataFolder filesep 'Part' int2str(participantID) 'Data.mat'], 'data');
     % Extract some basic information
     labels = data.trialinfo;
     nTrials = length(labels);
     nStim = length(unique(labels));
-    [stimuliFeaturesCell, nullFeaturesCell] = preprocessFeatures(data, frequencyRange, newFramerate, windowSize, trainWindowCenter, nullWindowCenter);
-    allFeatures = horzcat(stimuliFeaturesCell{:}, nullFeaturesCell{:});
+
+    if useBranchFusion
+        [stimuliFeaturesByBranch, nullFeaturesByBranch, branchInfo] = preprocessBranchFeatures(data, frequencyRange, newFramerate, ...
+            windowSize, trainWindowCenter, nullWindowCenter);
+        allFeaturesByBranch = cellfun(@(stimFeatures, nullFeatures) horzcat(stimFeatures{:}, nullFeatures{:}), ...
+            stimuliFeaturesByBranch, nullFeaturesByBranch, 'UniformOutput', false);
+        fprintf('Using %d spatiotemporal feature branches.\n', numel(branchInfo))
+    else
+        [stimuliFeaturesCell, nullFeaturesCell] = preprocessFeatures(data, frequencyRange, newFramerate, windowSize, trainWindowCenter, nullWindowCenter);
+        allFeatures = horzcat(stimuliFeaturesCell{:}, nullFeaturesCell{:});
+    end
 
     % Create folds
     fold = ceil((1:length(data.trial)) / (length(data.trial) / nFolds));
-    if ~isempty(nullFeaturesCell)
-        % Assing null data to the same fold as the corresponding stimulus data
+    if (~useBranchFusion && exist('nullFeaturesCell', 'var') && ~isempty(nullFeaturesCell)) || ...
+            (useBranchFusion && ~isempty(nullFeaturesByBranch{1}))
+        % Assign null data to the same fold as the corresponding stimulus data
         fold = [fold, fold];
         labels = [labels, zeros(1, nTrials)];
     end
 
     nTrialsPerFold = nTrials / nFolds;
 
-    allFeats = nan(nFolds, nStim);
+    if useBranchFusion
+        allFeats = nan(nFolds, numel(allFeaturesByBranch));
+    else
+        allFeats = nan(nFolds, nStim);
+    end
     predLbl = nan(nTrials, 1);
 
     % Loop through folds
@@ -62,48 +82,70 @@ function accuracy = crossValidateSingleDataset(dataFolder, participantID, nFolds
         allPred = nan(nTrialsPerFold, nStim);
 
         % Get training and testing data
-        trainFeatures = allFeatures(:, fold ~= f)';
         trainLabels = labels(fold ~= f)';
-        testFeatures = allFeatures(:, fold == f & labels > 0)';
 
-        nFeaturesOrig = size(allFeatures, 1);
-        if componentsPCA ~= inf
-            % Apply PCA to the training data
-            [trainFeatures, coeff, trainFeatureMean, explainedVariance] = reduceFeaturesPCA(trainFeatures, componentsPCA);
-            fprintf('Explained Variance by %d components: %.2f%%\n', componentsPCA, explainedVariance);
-            % Transform the test features using the same PCA transformation
-            testFeatures = (testFeatures - trainFeatureMean) * coeff(:, 1:componentsPCA);
-        end
-        assert(size(trainFeatures, 2) == min(nFeaturesOrig, componentsPCA) && size(testFeatures, 2) == min(nFeaturesOrig, componentsPCA), ...
-            'Feature dimension incorrect.')
+        if useBranchFusion
+            trainFeatures = cellfun(@(branchFeatures) branchFeatures(:, fold ~= f)', ...
+                allFeaturesByBranch, 'UniformOutput', false);
+            testFeatures = cellfun(@(branchFeatures) branchFeatures(:, fold == f & labels > 0)', ...
+                allFeaturesByBranch, 'UniformOutput', false);
 
-        if contains(classifier, {'gradient-boosting', 'lasso', 'svm-binary'})
-            % Iterate over all stimuli for binary classifiers
-            models = cell(1, nStim);
-            for stim = 1:nStim
-                switch classifier
-                    case 'gradient-boosting'
-                        models{stim} = trainGradientBoosting(trainFeatures, double(trainLabels == stim), testFeatures, classifierParam);
-                        allPred(:, stim) = generatePredictionsFromModel(testFeatures, models{stim});
-                    case 'lasso'
-                        models{stim} = trainForStimulusLassoGLM(trainFeatures, double(trainLabels == stim), classifierParam);
-                        allPred(:, stim) = glmval([models{stim}.intercept; models{stim}.beta], testFeatures, 'logit');
-                    case 'svm-binary'
-                        models{stim} = trainBinarySVM(trainFeatures, double(trainLabels == stim), testFeatures, classifierParam);
-                        [~, score] = predict(models{stim}, testFeatures);
-                        allPred(:, stim) = score(:, 2); % The second column contains scores for the positive class
-                    otherwise
-                        error('Unsupported classifier.')
+            if componentsPCA ~= inf
+                for branchIdx = 1:numel(trainFeatures)
+                    nFeaturesOrig = size(trainFeatures{branchIdx}, 2);
+                    nComponents = min(componentsPCA, nFeaturesOrig);
+                    [trainFeatures{branchIdx}, coeff, trainFeatureMean, explainedVariance] = reduceFeaturesPCA(trainFeatures{branchIdx}, nComponents);
+                    fprintf('Branch %d PCA: explained variance by %d components: %.2f%%\n', branchIdx, nComponents, explainedVariance);
+                    testFeatures{branchIdx} = (testFeatures{branchIdx} - trainFeatureMean) * coeff(:, 1:nComponents);
+                    allFeats(f, branchIdx) = nComponents;
                 end
             end
-            % Set to most suitable class
-            [~, predLbl(fold == f & labels > 0)] = max(allPred, [], 2);
-        else
-            % No iteration for multiclass classifiers
-            % Train
+
             model = trainMulticlassClassifier(trainFeatures, trainLabels, classifier, classifierParam);
-            % Predict
             predLbl(fold == f & labels > 0) = generatePredictionsFromModel(testFeatures, model, classifier);
+        else
+            trainFeatures = allFeatures(:, fold ~= f)';
+            testFeatures = allFeatures(:, fold == f & labels > 0)';
+
+            nFeaturesOrig = size(allFeatures, 1);
+            if componentsPCA ~= inf
+                % Apply PCA to the training data
+                [trainFeatures, coeff, trainFeatureMean, explainedVariance] = reduceFeaturesPCA(trainFeatures, componentsPCA);
+                fprintf('Explained Variance by %d components: %.2f%%\n', componentsPCA, explainedVariance);
+                % Transform the test features using the same PCA transformation
+                testFeatures = (testFeatures - trainFeatureMean) * coeff(:, 1:componentsPCA);
+            end
+            assert(size(trainFeatures, 2) == min(nFeaturesOrig, componentsPCA) && size(testFeatures, 2) == min(nFeaturesOrig, componentsPCA), ...
+                'Feature dimension incorrect.')
+
+            if contains(classifier, {'gradient-boosting', 'lasso', 'svm-binary'})
+                % Iterate over all stimuli for binary classifiers
+                models = cell(1, nStim);
+                for stim = 1:nStim
+                    switch classifier
+                        case 'gradient-boosting'
+                            models{stim} = trainGradientBoosting(trainFeatures, double(trainLabels == stim), testFeatures, classifierParam);
+                            allPred(:, stim) = generatePredictionsFromModel(testFeatures, models{stim});
+                        case 'lasso'
+                            models{stim} = trainForStimulusLassoGLM(trainFeatures, double(trainLabels == stim), classifierParam);
+                            allPred(:, stim) = glmval([models{stim}.intercept; models{stim}.beta], testFeatures, 'logit');
+                        case 'svm-binary'
+                            models{stim} = trainBinarySVM(trainFeatures, double(trainLabels == stim), testFeatures, classifierParam);
+                            [~, score] = predict(models{stim}, testFeatures);
+                            allPred(:, stim) = score(:, 2); % The second column contains scores for the positive class
+                        otherwise
+                            error('Unsupported classifier.')
+                    end
+                end
+                % Set to most suitable class
+                [~, predLbl(fold == f & labels > 0)] = max(allPred, [], 2);
+            else
+                % No iteration for multiclass classifiers
+                % Train
+                model = trainMulticlassClassifier(trainFeatures, trainLabels, classifier, classifierParam);
+                % Predict
+                predLbl(fold == f & labels > 0) = generatePredictionsFromModel(testFeatures, model, classifier);
+            end
         end
     end
 
@@ -134,8 +176,8 @@ function accuracy = crossValidateSingleDataset(dataFolder, participantID, nFolds
     nFeatures = allFeats;
     fprintf('Participant %d: %0.2f%% accuracy\n', participantID, accuracy * 100)
 
-    if ~isnan(nFeatures)
-        fprintf('Mean number of features: %0.2f\n', mean(nFeatures, 'all'))
+    if any(~isnan(nFeatures), 'all')
+        fprintf('Mean number of features: %0.2f\n', mean(nFeatures, 'all', 'omitnan'))
     end
 end
 

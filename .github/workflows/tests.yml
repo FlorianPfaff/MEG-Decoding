@@ -47,3 +47,13 @@ jobs:
           acc = crossValidateSingleDataset('data', 2, 10, 0.1, 0.2, -0.2, inf, '${{ matrix.model }}', nan, 100, [0, inf])
           toc
           assert(acc>0.35)
+
+    - name: Smoke test branch-fusion classifier
+      if: matrix.model == 'multiclass-svm'
+      uses: matlab-actions/run-command@v2
+      with:
+        command: |
+          tic
+          accBranch = crossValidateSingleDataset('data', 2, 2, 0.1, 0.2, nan, inf, 'branch-fusion-svm', nan, 20, [0, inf])
+          toc
+          assert(isfinite(accBranch) && accBranch >= 0 && accBranch <= 1)
