@@ -9,6 +9,7 @@ X/y/subjects tensor expected by pytorch_meg_baselines.py.
 Supported inputs, in priority order:
   1. .npz/.mat files that already contain X, y, subjects arrays.
   2. MNE Epochs FIF files (*-epo.fif, *-epo.fif.gz, *epo*.fif*).
+  3. MNE Raw FIF files with stimulus events, e.g. MNE visual_92_categories.
 
 The goal is a quick strict-LOSO smoke benchmark on real public data, not a final
 hyperparameter-optimized result.
@@ -29,6 +30,10 @@ import numpy as np
 
 TENSOR_SUFFIXES = {".npz", ".mat"}
 EPOCH_PATTERNS = ("*-epo.fif", "*-epo.fif.gz", "*epo*.fif", "*epo*.fif.gz")
+RAW_SKIP_WORDS = (
+    "epo", "epoch", "ave", "cov", "fwd", "inv", "trans", "src", "bem",
+    "head", "fid", "annot", "emptyroom", "erm", "sss_info",
+)
 
 
 def log(msg: str) -> None:
@@ -47,11 +52,15 @@ def iter_files(root: Path, max_files: int = 50000) -> Iterable[Path]:
             yield Path(dirpath) / filename
 
 
+def combined_suffix(path: Path) -> str:
+    return "".join(path.suffixes[-2:]) if path.name.endswith(".fif.gz") else path.suffix
+
+
 def inventory(root: Path, max_entries: int = 200) -> dict:
     suffix_counts = Counter()
     examples: list[str] = []
     for p in iter_files(root):
-        suffix = "".join(p.suffixes[-2:]) if p.name.endswith(".fif.gz") else p.suffix
+        suffix = combined_suffix(p)
         suffix_counts[suffix or "<none>"] += 1
         if len(examples) < max_entries and (
             suffix in TENSOR_SUFFIXES or "epo" in p.name.lower() or p.suffix in {".fif", ".gz", ".npy", ".npz", ".mat"}
@@ -121,11 +130,50 @@ def find_mne_epoch_files(root: Path, limit: int = 200) -> list[Path]:
     return unique[:limit]
 
 
-def load_mne_epochs(paths: list[Path], *, max_subjects: int, tmin: float | None, tmax: float | None, resample_hz: float | None) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict] | None:
+def find_mne_raw_files(root: Path, limit: int = 200) -> list[Path]:
+    candidates: list[Path] = []
+    for p in iter_files(root):
+        suffix = combined_suffix(p)
+        if suffix not in {".fif", ".fif.gz"}:
+            continue
+        name = p.name.lower()
+        if any(word in name for word in RAW_SKIP_WORDS):
+            continue
+        # Avoid separately opening split-file continuations when the first file
+        # points to them internally.
+        if re.search(r"-\d+\.fif(\.gz)?$", name):
+            continue
+        candidates.append(p)
+    # Prioritize likely data files such as raw/tsss/mc files.
+    candidates = sorted(
+        set(candidates),
+        key=lambda p: (
+            not any(k in p.name.lower() for k in ("raw", "tsss", "sss", "meg")),
+            str(p),
+        ),
+    )
+    return candidates[:limit]
+
+
+def import_mne():
     try:
         import mne
+        return mne
     except Exception as exc:  # noqa: BLE001
-        log(f"MNE is not importable, cannot load FIF epochs: {exc}")
+        log(f"MNE is not importable: {exc}")
+        return None
+
+
+def load_mne_epochs(
+    paths: list[Path],
+    *,
+    max_subjects: int,
+    tmin: float | None,
+    tmax: float | None,
+    resample_hz: float | None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict] | None:
+    mne = import_mne()
+    if mne is None:
         return None
 
     by_subject: dict[str, list[Path]] = defaultdict(list)
@@ -167,7 +215,122 @@ def load_mne_epochs(paths: list[Path], *, max_subjects: int, tmin: float | None,
     return x, y, subjects, meta
 
 
-def restrict_dataset(x: np.ndarray, y: np.ndarray, subjects: np.ndarray, *, max_subjects: int, max_classes: int, max_trials_per_subject_class: int, seed: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
+def find_events_robust(mne, raw):
+    # Let MNE choose the stim channel first; fall back to common Neuromag names.
+    errors = []
+    for stim_channel in (None, "STI101", "STI 014", "STI102"):
+        try:
+            return mne.find_events(raw, stim_channel=stim_channel, shortest_event=1, verbose="ERROR")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{stim_channel}: {exc}")
+    log("Could not find events. Tried: " + " | ".join(errors))
+    return None
+
+
+def bounded_events(events: np.ndarray, *, max_classes: int, max_trials_per_class: int, event_code_max: int | None, seed: int) -> np.ndarray:
+    events = events[events[:, 2] > 0]
+    if event_code_max is not None:
+        events = events[events[:, 2] <= event_code_max]
+    if len(events) == 0:
+        return events
+    rng = np.random.default_rng(seed)
+    selected_codes = [code for code, _ in Counter(events[:, 2].tolist()).most_common(max_classes)]
+    selected_rows: list[int] = []
+    for code in selected_codes:
+        idx = np.where(events[:, 2] == code)[0]
+        if len(idx) > max_trials_per_class:
+            idx = rng.choice(idx, size=max_trials_per_class, replace=False)
+        selected_rows.extend(idx.tolist())
+    selected_rows = sorted(selected_rows)
+    return events[selected_rows]
+
+
+def load_mne_raw_events(
+    paths: list[Path],
+    *,
+    max_subjects: int,
+    max_classes: int,
+    max_trials_per_subject_class: int,
+    event_code_max: int | None,
+    tmin: float,
+    tmax: float,
+    resample_hz: float | None,
+    seed: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict] | None:
+    mne = import_mne()
+    if mne is None:
+        return None
+
+    by_subject: dict[str, list[Path]] = defaultdict(list)
+    for p in paths:
+        by_subject[subject_from_path(p)].append(p)
+    selected_subjects = sorted(by_subject)[:max_subjects]
+    xs: list[np.ndarray] = []
+    ys: list[np.ndarray] = []
+    ss: list[np.ndarray] = []
+    used_files: list[str] = []
+
+    for subj in selected_subjects:
+        for p in by_subject[subj]:
+            try:
+                raw = mne.io.read_raw_fif(p, preload=False, on_split_missing="warn", verbose="ERROR")
+                events = find_events_robust(mne, raw)
+                if events is None:
+                    continue
+                events = bounded_events(
+                    events,
+                    max_classes=max_classes,
+                    max_trials_per_class=max_trials_per_subject_class,
+                    event_code_max=event_code_max,
+                    seed=seed,
+                )
+                if len(events) == 0 or len(np.unique(events[:, 2])) < 2:
+                    log(f"Skipping raw candidate {p}: not enough usable event classes after bounding")
+                    continue
+                event_id = {str(code): int(code) for code in sorted(np.unique(events[:, 2]).tolist())}
+                epochs = mne.Epochs(
+                    raw,
+                    events,
+                    event_id=event_id,
+                    tmin=tmin,
+                    tmax=tmax,
+                    baseline=None,
+                    preload=True,
+                    reject_by_annotation=False,
+                    picks="meg",
+                    verbose="ERROR",
+                )
+                if resample_hz is not None and epochs.info["sfreq"] > resample_hz:
+                    epochs.resample(resample_hz, verbose="ERROR")
+                data = epochs.get_data().astype(np.float32)
+                labels = epochs.events[:, 2]
+                if data.ndim != 3 or len(labels) != len(data) or len(np.unique(labels)) < 2:
+                    continue
+                xs.append(data)
+                ys.append(labels)
+                ss.append(np.array([subj] * len(labels), dtype=object))
+                used_files.append(str(p))
+            except Exception as exc:  # noqa: BLE001
+                log(f"Skipping raw candidate {p}: {exc}")
+    if not xs:
+        return None
+    x = np.concatenate(xs, axis=0)
+    y = np.concatenate(ys, axis=0)
+    subjects = np.concatenate(ss, axis=0)
+    meta = {"kind": "mne_raw_events", "used_files": used_files, "selected_subjects": selected_subjects}
+    return x, y, subjects, meta
+
+
+def restrict_dataset(
+    x: np.ndarray,
+    y: np.ndarray,
+    subjects: np.ndarray,
+    *,
+    max_subjects: int,
+    max_classes: int,
+    max_trials_per_subject_class: int,
+    seed: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
     rng = np.random.default_rng(seed)
     subjects = subjects.astype(str)
 
@@ -216,7 +379,16 @@ def restrict_dataset(x: np.ndarray, y: np.ndarray, subjects: np.ndarray, *, max_
         "class_counts": {str(k): int(v) for k, v in Counter(y_encoded.tolist()).items()},
         "subject_counts": {str(k): int(v) for k, v in Counter(subjects.tolist()).items()},
     }
+    if meta["n_subjects"] < 2 or meta["n_classes"] < 2:
+        raise RuntimeError(f"Need at least 2 subjects and 2 classes after restriction, got {meta}")
     return x.astype(np.float32), y_encoded, subjects.astype(str), meta
+
+
+def save_subset(args, x: np.ndarray, y: np.ndarray, subjects: np.ndarray, meta: dict) -> tuple[Path, dict]:
+    out = args.output_dir / "cached_public_meg_subset.npz"
+    np.savez_compressed(out, X=x, y=y, subjects=subjects)
+    (args.output_dir / "dataset_info.json").write_text(json.dumps(meta, indent=2))
+    return out, meta
 
 
 def find_dataset(args) -> tuple[Path, dict]:
@@ -239,22 +411,45 @@ def find_dataset(args) -> tuple[Path, dict]:
             continue
         x, y, subjects, meta = restrict_dataset(x, y, subjects, max_subjects=args.max_subjects, max_classes=args.max_classes, max_trials_per_subject_class=args.max_trials_per_subject_class, seed=args.seed)
         meta.update({"kind": "ready_tensor", "source_file": str(p)})
-        out = args.output_dir / "cached_public_meg_subset.npz"
-        np.savez_compressed(out, X=x, y=y, subjects=subjects)
-        (args.output_dir / "dataset_info.json").write_text(json.dumps(meta, indent=2))
-        return out, meta
+        return save_subset(args, x, y, subjects, meta)
 
     epoch_paths = find_mne_epoch_files(root)
     if epoch_paths:
+        log(f"Found {len(epoch_paths)} MNE Epochs candidate files")
         loaded_epochs = load_mne_epochs(epoch_paths, max_subjects=args.max_subjects, tmin=args.tmin, tmax=args.tmax, resample_hz=args.resample_hz)
         if loaded_epochs is not None:
             x, y, subjects, source_meta = loaded_epochs
             x, y, subjects, meta = restrict_dataset(x, y, subjects, max_subjects=args.max_subjects, max_classes=args.max_classes, max_trials_per_subject_class=args.max_trials_per_subject_class, seed=args.seed)
             meta.update(source_meta)
-            out = args.output_dir / "cached_public_meg_subset.npz"
-            np.savez_compressed(out, X=x, y=y, subjects=subjects)
-            (args.output_dir / "dataset_info.json").write_text(json.dumps(meta, indent=2))
-            return out, meta
+            return save_subset(args, x, y, subjects, meta)
+
+    raw_paths = find_mne_raw_files(root)
+    if raw_paths:
+        log(f"Found {len(raw_paths)} MNE Raw FIF candidate files")
+        loaded_raw = load_mne_raw_events(
+            raw_paths,
+            max_subjects=args.max_subjects,
+            max_classes=args.max_classes,
+            max_trials_per_subject_class=args.max_trials_per_subject_class,
+            event_code_max=args.event_code_max,
+            tmin=args.tmin,
+            tmax=args.tmax,
+            resample_hz=args.resample_hz,
+            seed=args.seed,
+        )
+        if loaded_raw is not None:
+            x, y, subjects, source_meta = loaded_raw
+            x, y, subjects, meta = restrict_dataset(
+                x,
+                y,
+                subjects,
+                max_subjects=args.max_subjects,
+                max_classes=args.max_classes,
+                max_trials_per_subject_class=args.max_trials_per_subject_class,
+                seed=args.seed,
+            )
+            meta.update(source_meta)
+            return save_subset(args, x, y, subjects, meta)
 
     raise RuntimeError(
         "No compatible cached dataset found. See cache_inventory.json for the files discovered under " + str(root)
@@ -299,6 +494,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-classes", type=int, default=16)
     p.add_argument("--max-trials-per-subject-class", type=int, default=30)
     p.add_argument("--max-tensor-candidates", type=int, default=100)
+    p.add_argument("--event-code-max", type=int, default=1000)
     p.add_argument("--tmin", type=float, default=0.0)
     p.add_argument("--tmax", type=float, default=0.6)
     p.add_argument("--resample-hz", type=float, default=200.0)
