@@ -2,7 +2,8 @@ function classifierParam = getDefaultClassifierParam(classifier)
     switch classifier
         case 'lasso'
             classifierParam = 0.005;
-        case {'multiclass-svm', 'multiclass-svm-weighted', 'binary-svm'}
+        case {'multiclass-svm', 'multiclass-svm-weighted', 'binary-svm', ...
+                'branch-fusion-svm', 'branch-fusion-svm-weighted'}
             classifierParam = 0.5;
         case {'random-forest', 'gradient-boosting'}
             classifierParam = 100;
