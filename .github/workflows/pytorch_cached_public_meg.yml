@@ -13,6 +13,9 @@ on:
         required: false
         default: '/home/github-runner/.cache/datasets'
 
+env:
+  CACHE_ROOT: ${{ github.event.inputs.cache_root || '/home/github-runner/.cache/datasets' }}
+
 jobs:
   cached-public-meg-benchmark:
     name: Cached public MEG benchmark
@@ -31,9 +34,7 @@ jobs:
           which python3
           python3 --version
           df -h /home/github-runner || true
-          find "${CACHE_ROOT:-/home/github-runner/.cache/datasets}" -maxdepth 2 -type d | head -100 || true
-        env:
-          CACHE_ROOT: ${{ inputs.cache_root || '/home/github-runner/.cache/datasets' }}
+          find "${CACHE_ROOT}" -maxdepth 2 -type d | head -100 || true
 
       - name: Check Python dependencies
         run: |
@@ -62,8 +63,6 @@ jobs:
             --patience 3 \
             --batch-size 32 \
             --device cpu
-        env:
-          CACHE_ROOT: ${{ inputs.cache_root || '/home/github-runner/.cache/datasets' }}
 
       - name: Upload benchmark outputs
         if: always()
