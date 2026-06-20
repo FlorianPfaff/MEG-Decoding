@@ -40,16 +40,24 @@ def log(msg: str) -> None:
     print(msg, flush=True)
 
 
+def is_sidecar_or_hidden_data_file(path: Path) -> bool:
+    """Return True for macOS AppleDouble sidecars and other hidden data files."""
+    return path.name.startswith("._") or path.name.startswith(".")
+
+
 def iter_files(root: Path, max_files: int = 50000) -> Iterable[Path]:
     count = 0
     for dirpath, dirnames, filenames in os.walk(root):
         # Keep traversal bounded and avoid common non-data folders.
         dirnames[:] = [d for d in dirnames if d not in {".git", "__pycache__", "node_modules"}]
         for filename in filenames:
+            path = Path(dirpath) / filename
+            if is_sidecar_or_hidden_data_file(path):
+                continue
             count += 1
             if count > max_files:
                 return
-            yield Path(dirpath) / filename
+            yield path
 
 
 def combined_suffix(path: Path) -> str:
@@ -108,23 +116,41 @@ def try_load_tensor_file(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray
 
 
 def subject_from_path(path: Path) -> str:
+    """Extract a stable subject identifier from common MEG dataset filenames.
+
+    The ordering matters. We must match full words such as ``sample_subject_0``
+    before the BIDS-style ``sub`` pattern, otherwise ``subject`` can be parsed as
+    ``sub-ject``.
+    """
     text = str(path)
-    matches = re.findall(r"sub[-_]?([A-Za-z0-9]+)|subject[-_]?([A-Za-z0-9]+)|participant[-_]?([A-Za-z0-9]+)", text, flags=re.I)
-    for match in reversed(matches):
-        for group in match:
-            if group:
-                return f"sub-{group}"
+    patterns = [
+        r"sample[_-]subject[_-]?([A-Za-z0-9]+)",
+        r"subject[_-]?([A-Za-z0-9]+)",
+        r"participant[_-]?([A-Za-z0-9]+)",
+        r"(?<![A-Za-z0-9])sub[_-]?([A-Za-z0-9]+)",
+    ]
+    for pattern in patterns:
+        matches = re.findall(pattern, text, flags=re.I)
+        if matches:
+            value = matches[-1]
+            if isinstance(value, tuple):
+                value = next((v for v in value if v), "")
+            if value:
+                return f"sub-{value}"
+
     # Fall back to the nearest directory name to avoid making each file a new subject.
     for parent in path.parents:
-        if parent.name.lower().startswith(("sub", "subject", "participant")):
-            return parent.name
+        name = parent.name
+        lower = name.lower()
+        if lower.startswith(("sub-", "sub_", "subject", "participant")):
+            return name
     return path.parent.name
 
 
 def find_mne_epoch_files(root: Path, limit: int = 200) -> list[Path]:
     found: list[Path] = []
     for pattern in EPOCH_PATTERNS:
-        found.extend(root.rglob(pattern))
+        found.extend(p for p in root.rglob(pattern) if not is_sidecar_or_hidden_data_file(p))
     # Deduplicate while preserving deterministic order.
     unique = sorted(set(found), key=lambda p: str(p))
     return unique[:limit]
@@ -234,7 +260,7 @@ def bounded_events(events: np.ndarray, *, max_classes: int, max_trials_per_class
     if len(events) == 0:
         return events
     rng = np.random.default_rng(seed)
-    selected_codes = [code for code, _ in Counter(events[:, 2].tolist()).most_common(max_classes)]
+    selected_codes = sorted(np.unique(events[:, 2]).tolist())[:max_classes]
     selected_rows: list[int] = []
     for code in selected_codes:
         idx = np.where(events[:, 2] == code)[0]
@@ -343,7 +369,7 @@ def restrict_dataset(
         pass
 
     class_counts = Counter(y.tolist())
-    selected_classes = [c for c, _ in class_counts.most_common(max_classes)]
+    selected_classes = sorted(class_counts.keys(), key=lambda v: str(v))[:max_classes]
     keep_class = np.isin(y, selected_classes)
     x, y, subjects = x[keep_class], y[keep_class], subjects[keep_class]
 
