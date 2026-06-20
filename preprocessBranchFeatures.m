@@ -79,7 +79,7 @@ function temporalWindows = getDefaultTemporalWindows(data, windowSize, trainWind
         end
 
         key = sprintf('%.6f_%.6f', currWindow(1), currWindow(2));
-        if ismember(key, seenKeys)
+        if any(strcmp(key, seenKeys))
             continue
         end
 
