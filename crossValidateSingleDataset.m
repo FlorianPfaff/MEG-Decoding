@@ -39,7 +39,7 @@ function accuracy = crossValidateSingleDataset(dataFolder, participantID, nFolds
         classifierParam = getDefaultClassifierParam(classifier);
     end
 
-    useBranchFusion = ismember(classifier, {'branch-fusion-svm', 'branch-fusion-svm-weighted'});
+    useBranchFusion = any(strcmp(classifier, {'branch-fusion-svm', 'branch-fusion-svm-weighted'}));
 
     % Load the data for that participant
     load([dataFolder filesep 'Part' int2str(participantID) 'Data.mat'], 'data');
