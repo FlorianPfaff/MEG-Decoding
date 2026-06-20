@@ -34,7 +34,7 @@ function accuracy = evaluateModelTransfer(dataFolder, parts, windowSize, trainWi
         classifierParam = getDefaultClassifierParam(classifier);
     end
 
-    useBranchFusion = ismember(classifier, {'branch-fusion-svm', 'branch-fusion-svm-weighted'});
+    useBranchFusion = any(strcmp(classifier, {'branch-fusion-svm', 'branch-fusion-svm-weighted'}));
 
     trainExpData = load([dataFolder filesep 'Part' int2str(parts) 'Data.mat']);
     valExpData = load([dataFolder filesep 'Part' int2str(parts) 'CueData.mat']);
