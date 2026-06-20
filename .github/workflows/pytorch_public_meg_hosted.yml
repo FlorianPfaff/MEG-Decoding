@@ -52,21 +52,27 @@ jobs:
       - name: Run compact neural baselines on public Visual 92 MEG subset
         run: |
           set -euxo pipefail
-          python run_cached_public_meg_baselines.py \
-            --cache-root "${DATA_ROOT}" \
-            --output-dir results/public_visual92_hosted \
-            --models eegnet lfcnn varcnn hgrn \
-            --max-subjects 4 \
-            --max-target-subjects 2 \
-            --max-classes 4 \
-            --max-trials-per-subject-class 10 \
-            --epochs 2 \
-            --patience 1 \
-            --batch-size 16 \
-            --tmin 0.0 \
-            --tmax 0.5 \
-            --resample-hz 100 \
-            --device cpu
+          mkdir -p results/public_visual92_hosted
+          {
+            echo "DATA_ROOT=${DATA_ROOT}"
+            echo "Top-level Visual92 files:"
+            find "${DATA_ROOT}" -maxdepth 2 -type f | sort | sed -n '1,80p'
+            python run_cached_public_meg_baselines.py \
+              --cache-root "${DATA_ROOT}" \
+              --output-dir results/public_visual92_hosted \
+              --models eegnet lfcnn varcnn hgrn \
+              --max-subjects 4 \
+              --max-target-subjects 2 \
+              --max-classes 4 \
+              --max-trials-per-subject-class 10 \
+              --epochs 2 \
+              --patience 1 \
+              --batch-size 16 \
+              --tmin 0.0 \
+              --tmax 0.5 \
+              --resample-hz 100 \
+              --device cpu
+          } 2>&1 | tee results/public_visual92_hosted/run.log
 
       - name: Upload hosted public benchmark outputs
         if: always()
