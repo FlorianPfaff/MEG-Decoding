@@ -1,0 +1,87 @@
+name: PyTorch public MEG benchmark hosted
+
+on:
+  pull_request:
+    paths:
+      - 'pytorch_meg_baselines.py'
+      - 'run_cached_public_meg_baselines.py'
+      - '.github/workflows/pytorch_public_meg_hosted.yml'
+  workflow_dispatch:
+
+jobs:
+  public-meg-hosted-benchmark:
+    name: Public MEG benchmark on GitHub-hosted runner
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache MNE visual dataset
+        uses: actions/cache@v4
+        with:
+          path: mne_data
+          key: mne-visual92-v1
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy scipy mne torch --index-url https://pypi.org/simple
+
+      - name: Download public MNE Visual 92 MEG dataset
+        run: |
+          set -euxo pipefail
+          python - <<'PY' | tee visual92_path.txt
+          from pathlib import Path
+          import mne
+          download_root = Path.cwd() / 'mne_data'
+          path = mne.datasets.visual_92_categories.data_path(
+              path=str(download_root),
+              update_path=False,
+              download=True,
+              verbose=True,
+          )
+          print(Path(path).resolve())
+          PY
+          echo "DATA_ROOT=$(tail -n 1 visual92_path.txt)" >> "$GITHUB_ENV"
+
+      - name: Run compact neural baselines on public Visual 92 MEG subset
+        run: |
+          set -euxo pipefail
+          mkdir -p results/public_visual92_hosted
+          {
+            echo "DATA_ROOT=${DATA_ROOT}"
+            echo "Top-level Visual92 files:"
+            find "${DATA_ROOT}" -maxdepth 2 -type f | sort | sed -n '1,80p'
+            python run_cached_public_meg_baselines.py \
+              --cache-root "${DATA_ROOT}" \
+              --output-dir results/public_visual92_hosted \
+              --models eegnet lfcnn varcnn hgrn \
+              --max-subjects 4 \
+              --max-target-subjects 2 \
+              --max-classes 4 \
+              --max-trials-per-subject-class 10 \
+              --epochs 2 \
+              --patience 1 \
+              --batch-size 16 \
+              --tmin 0.0 \
+              --tmax 0.5 \
+              --resample-hz 100 \
+              --device cpu
+          } 2>&1 | tee results/public_visual92_hosted/run.log
+
+      - name: Upload hosted public benchmark outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-visual92-hosted-baseline-results
+          path: |
+            results/public_visual92_hosted/
+            visual92_path.txt
+          if-no-files-found: warn
